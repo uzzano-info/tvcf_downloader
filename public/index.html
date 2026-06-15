@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TVCF 영상 다운로더</title>
+<style>
+  :root { --bg:#0f1220; --card:#191d31; --card2:#0f1326; --accent:#5b8cff; --text:#e8eaf2;
+    --muted:#9aa0b5; --border:#2a3050; --ok:#7bffa1; --err:#ff7b7b; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;
+    background:linear-gradient(160deg,#0f1220,#161a2e); color:var(--text); min-height:100vh; padding:32px 16px; }
+  .wrap { width:100%; max-width:680px; margin:0 auto; }
+  h1 { margin:0 0 4px; font-size:24px; }
+  p.sub { margin:0 0 24px; color:var(--muted); font-size:14px; }
+  .card { background:var(--card); border-radius:18px; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,.4); }
+  label { font-size:13px; color:var(--muted); display:block; margin-bottom:6px; }
+  textarea, select, input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--border);
+    background:var(--card2); color:var(--text); font-size:14px; font-family:inherit; }
+  textarea { resize:vertical; min-height:120px; line-height:1.7; }
+  textarea:focus, select:focus { outline:none; border-color:var(--accent); }
+  .bar { display:flex; gap:12px; align-items:center; margin:14px 0 4px; flex-wrap:wrap; }
+  .bar .grow { flex:1; min-width:140px; }
+  .count { font-size:12px; color:var(--muted); }
+  .count.over { color:var(--err); }
+  button { padding:13px 18px; border:0; border-radius:10px; background:var(--accent); color:#fff;
+    font-size:14px; font-weight:600; cursor:pointer; transition:.15s; white-space:nowrap; }
+  button:hover { filter:brightness(1.1); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  button.ghost { background:#252b45; }
+  .list { margin-top:22px; display:flex; flex-direction:column; gap:10px; }
+  .item { background:var(--card2); border:1px solid var(--border); border-radius:12px; padding:14px 16px;
+    display:flex; gap:14px; align-items:center; }
+  .item .info { flex:1; min-width:0; }
+  .item .t { font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .item .u { font-size:11px; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .item select { width:auto; padding:8px 10px; font-size:13px; }
+  .item .st { font-size:12px; min-width:64px; text-align:right; }
+  .item.bad { border-color:#5a2535; }
+  .item.bad .t { color:var(--err); }
+  .st.ok { color:var(--ok); } .st.err { color:var(--err); } .st.run { color:var(--accent); }
+  .actions { margin-top:18px; display:none; gap:12px; }
+  .actions.show { display:flex; }
+  .spin { display:inline-block; width:13px; height:13px; border:2px solid currentColor; border-top-color:transparent;
+    border-radius:50%; animation:s .7s linear infinite; vertical-align:-2px; margin-right:6px; }
+  @keyframes s { to { transform:rotate(360deg); } }
+  .msg { margin-top:14px; font-size:13px; min-height:18px; }
+  .msg.err { color:var(--err); } .msg.ok { color:var(--ok); }
+  .item .dl { padding:9px 14px; font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🎬 TVCF 영상 다운로더</h1>
+  <p class="sub">tvcf.co.kr 영상 주소를 한 줄에 하나씩 붙여넣으세요. 최대 10개까지 한 번에 받을 수 있어요.</p>
+
+  <div class="card">
+    <label>영상 주소 (한 줄에 하나씩)</label>
+    <textarea id="urls" placeholder="https://tvcf.co.kr/play/bi1213-1015921&#10;https://tvcf.co.kr/play/..."></textarea>
+    <div class="bar">
+      <span id="count" class="count">0 / 10</span>
+      <span class="grow"></span>
+      <button id="clearBtn" class="ghost">비우기</button>
+      <button id="checkBtn">영상 확인</button>
+    </div>
+
+    <div id="list" class="list"></div>
+
+    <div id="actions" class="actions">
+      <div style="display:flex; align-items:center; gap:8px;">
+        <label style="margin:0;">전체 화질</label>
+        <select id="globalQuality" style="width:auto; padding:9px 10px;"></select>
+      </div>
+      <span class="grow"></span>
+      <button id="dlAllBtn">전체 다운로드</button>
+    </div>
+
+    <div id="msg" class="msg"></div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const QLABEL = { HD: "HD (720p)", SD: "SD (기본)", mobile: "모바일" };
+let items = []; // {url,title,qualities}
+
+function parseUrls() {
+  return [...new Set($("urls").value.split(/[\n,\s]+/).map(s => s.trim()).filter(Boolean))];
+}
+function updateCount() {
+  const n = parseUrls().length;
+  const c = $("count");
+  c.textContent = `${n} / 10`;
+  c.classList.toggle("over", n > 10);
+  $("checkBtn").disabled = n === 0 || n > 10;
+}
+$("urls").addEventListener("input", updateCount);
+$("clearBtn").addEventListener("click", () => { $("urls").value=""; $("list").innerHTML="";
+  $("actions").classList.remove("show"); setMsg(""); updateCount(); });
+$("checkBtn").addEventListener("click", check);
+$("dlAllBtn").addEventListener("click", downloadAll);
+updateCount();
+
+async function check() {
+  const urls = parseUrls();
+  if (urls.length > 10) return setMsg("최대 10개까지만 가능합니다.", "err");
+  setMsg(""); $("list").innerHTML = ""; $("actions").classList.remove("show");
+  setBusy($("checkBtn"), true, "확인 중");
+  try {
+    const r = await fetch("/api/batch-info", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ urls }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || "조회 실패");
+    render(data.results);
+  } catch (e) {
+    setMsg(e.message, "err");
+  } finally {
+    setBusy($("checkBtn"), false, "영상 확인");
+  }
+}
+
+function render(results) {
+  items = results;
+  const list = $("list");
+  list.innerHTML = "";
+  const allQ = new Set();
+  results.forEach((res, i) => {
+    const el = document.createElement("div");
+    el.className = "item" + (res.ok ? "" : " bad");
+    if (res.ok) {
+      res.qualities.forEach(q => allQ.add(q));
+      const opts = res.qualities.map(q => `<option value="${q}">${QLABEL[q]||q}</option>`).join("");
+      el.innerHTML = `
+        <div class="info">
+          <div class="t">${esc(res.title)}</div>
+          <div class="u">${esc(res.url)}</div>
+        </div>
+        <select data-q="${i}">${opts}</select>
+        <button class="dl" data-i="${i}">다운로드</button>
+        <span class="st" data-st="${i}"></span>`;
+    } else {
+      el.innerHTML = `
+        <div class="info">
+          <div class="t">⚠️ 불러오기 실패</div>
+          <div class="u">${esc(res.url)} — ${esc(res.error)}</div>
+        </div>`;
+    }
+    list.appendChild(el);
+  });
+
+  // 전체 화질 선택지 채우기
+  const gq = $("globalQuality");
+  gq.innerHTML = [...allQ].map(q => `<option value="${q}">${QLABEL[q]||q}</option>`).join("");
+  gq.onchange = () => {
+    document.querySelectorAll("select[data-q]").forEach(sel => {
+      if ([...sel.options].some(o => o.value === gq.value)) sel.value = gq.value;
+    });
+  };
+
+  list.querySelectorAll("button.dl").forEach(b => {
+    b.addEventListener("click", () => downloadOne(+b.dataset.i));
+  });
+
+  const okCount = results.filter(r => r.ok).length;
+  if (okCount > 0) $("actions").classList.add("show");
+  const bad = results.length - okCount;
+  setMsg(`${okCount}개 영상 준비 완료${bad ? `, ${bad}개 실패` : ""}.`, "ok");
+}
+
+function dlUrl(i) {
+  const res = items[i];
+  const sel = document.querySelector(`select[data-q="${i}"]`);
+  const q = sel ? sel.value : "HD";
+  return "/api/download?" + new URLSearchParams({ url: res.url, quality: q });
+}
+
+function downloadOne(i) {
+  const st = document.querySelector(`[data-st="${i}"]`);
+  trigger(dlUrl(i));
+  if (st) { st.className = "st run"; st.innerHTML = '<span class="spin"></span>받는 중';
+    setTimeout(() => { st.className = "st ok"; st.textContent = "✓ 시작됨"; }, 1500); }
+}
+
+async function downloadAll() {
+  const oks = items.map((r,i)=>({r,i})).filter(x=>x.r.ok);
+  setBusy($("dlAllBtn"), true, "다운로드 중");
+  // 변환 부하를 고려해 순차적으로 트리거
+  for (const {i} of oks) {
+    downloadOne(i);
+    await sleep(1200);
+  }
+  setBusy($("dlAllBtn"), false, "전체 다운로드");
+  setMsg(`${oks.length}개 다운로드를 시작했습니다. 브라우저 다운로드 목록을 확인하세요.`, "ok");
+}
+
+function trigger(href) {
+  const a = document.createElement("a");
+  a.href = href; a.download = "";
+  document.body.appendChild(a); a.click(); a.remove();
+}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+function esc(s){ return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function setMsg(t, cls=""){ const m=$("msg"); m.textContent=t; m.className="msg "+cls; }
+function setBusy(btn, busy, label){ btn.disabled=busy; btn.innerHTML = busy ? '<span class="spin"></span>'+label : label; }
+</script>
+</body>
+</html>
