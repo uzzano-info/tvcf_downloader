@@ -15,10 +15,22 @@
   p.sub { margin:0 0 24px; color:var(--muted); font-size:14px; }
   .card { background:var(--card); border-radius:18px; padding:24px; box-shadow:0 20px 60px rgba(0,0,0,.4); }
   label { font-size:13px; color:var(--muted); display:block; margin-bottom:6px; }
-  textarea, select, input { width:100%; padding:12px 14px; border-radius:10px; border:1px solid var(--border);
+  select, input { padding:12px 14px; border-radius:10px; border:1px solid var(--border);
     background:var(--card2); color:var(--text); font-size:14px; font-family:inherit; }
-  textarea { resize:vertical; min-height:120px; line-height:1.7; }
-  textarea:focus, select:focus { outline:none; border-color:var(--accent); }
+  select:focus { outline:none; border-color:var(--accent); }
+  /* 칩 입력 */
+  .chips { display:flex; flex-wrap:wrap; gap:8px; padding:10px; min-height:120px; align-content:flex-start;
+    border:1px solid var(--border); border-radius:10px; background:var(--card2); cursor:text; }
+  .chips.focus { border-color:var(--accent); }
+  .chip { display:inline-flex; align-items:center; gap:6px; max-width:100%; background:#252b45;
+    border:1px solid var(--border); border-radius:8px; padding:6px 8px 6px 10px; font-size:13px; }
+  .chip.dup { border-color:#7a6320; background:#33301c; }
+  .chip .cu { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:480px; }
+  .chip .x { cursor:pointer; color:var(--muted); font-weight:700; line-height:1; padding:0 2px; }
+  .chip .x:hover { color:var(--err); }
+  .chips input { flex:1; min-width:180px; border:0; background:transparent; padding:6px 4px; color:var(--text);
+    font-size:14px; }
+  .chips input:focus { outline:none; }
   .bar { display:flex; gap:12px; align-items:center; margin:14px 0 4px; flex-wrap:wrap; }
   .bar .grow { flex:1; min-width:140px; }
   .count { font-size:12px; color:var(--muted); }
@@ -55,8 +67,10 @@
   <p class="sub">tvcf.co.kr 영상 주소를 한 줄에 하나씩 붙여넣으세요. 최대 10개까지 한 번에 받을 수 있어요.</p>
 
   <div class="card">
-    <label>영상 주소 (한 줄에 하나씩)</label>
-    <textarea id="urls" placeholder="https://tvcf.co.kr/play/bi1213-1015921&#10;https://tvcf.co.kr/play/..."></textarea>
+    <label>영상 주소 (붙여넣으면 자동으로 분리돼요 · Enter/쉼표로도 추가)</label>
+    <div id="chips" class="chips">
+      <input id="chipInput" type="text" placeholder="https://tvcf.co.kr/play/... 붙여넣기" />
+    </div>
     <div class="bar">
       <span id="count" class="count">0 / 10</span>
       <span class="grow"></span>
@@ -83,20 +97,72 @@
 const $ = (id) => document.getElementById(id);
 const QLABEL = { HD: "HD (720p)", SD: "SD (기본)", mobile: "모바일" };
 let items = []; // {url,title,qualities}
+let urls = [];  // 입력된 URL 칩 목록
 
-function parseUrls() {
-  return [...new Set($("urls").value.split(/[\n,\s]+/).map(s => s.trim()).filter(Boolean))];
+const chipsBox = $("chips"), chipInput = $("chipInput");
+
+function parseUrls() { return urls; }
+function splitTokens(s){ return s.split(/[\n\r,\s]+/).map(t => t.trim()).filter(Boolean); }
+
+// 토큰들을 칩으로 추가 (중복/초과는 표시만)
+function addTokens(tokens) {
+  let added = 0;
+  for (const t of tokens) {
+    if (urls.length >= 10) { setMsg("최대 10개까지만 추가할 수 있어요.", "err"); break; }
+    if (urls.includes(t)) { flashDup(t); continue; }
+    urls.push(t); added++;
+  }
+  if (added) renderChips();
+  updateCount();
 }
+function removeUrl(u){ urls = urls.filter(x => x !== u); renderChips(); updateCount(); }
+
+function renderChips() {
+  chipsBox.querySelectorAll(".chip").forEach(c => c.remove());
+  urls.forEach(u => {
+    const chip = document.createElement("span");
+    chip.className = "chip"; chip.dataset.u = u;
+    chip.innerHTML = `<span class="cu">${esc(u)}</span><span class="x">×</span>`;
+    chip.querySelector(".x").addEventListener("click", () => removeUrl(u));
+    chipsBox.insertBefore(chip, chipInput);
+  });
+}
+function flashDup(u) {
+  const chip = chipsBox.querySelector(`.chip[data-u="${CSS.escape(u)}"]`);
+  if (chip) { chip.classList.add("dup"); setTimeout(() => chip.classList.remove("dup"), 800); }
+}
+
 function updateCount() {
-  const n = parseUrls().length;
-  const c = $("count");
+  const n = urls.length, c = $("count");
   c.textContent = `${n} / 10`;
-  c.classList.toggle("over", n > 10);
-  $("checkBtn").disabled = n === 0 || n > 10;
+  c.classList.toggle("over", n >= 10);
+  $("checkBtn").disabled = n === 0;
 }
-$("urls").addEventListener("input", updateCount);
-$("clearBtn").addEventListener("click", () => { $("urls").value=""; $("list").innerHTML="";
-  $("actions").classList.remove("show"); setMsg(""); updateCount(); });
+
+// 붙여넣기 → 즉시 분리해서 칩 생성
+chipInput.addEventListener("paste", (e) => {
+  e.preventDefault();
+  const text = (e.clipboardData || window.clipboardData).getData("text");
+  addTokens(splitTokens(text));
+  chipInput.value = "";
+});
+chipInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" || e.key === "," || (e.key === " " && chipInput.value.trim())) {
+    e.preventDefault();
+    if (chipInput.value.trim()) { addTokens(splitTokens(chipInput.value)); chipInput.value = ""; }
+  } else if (e.key === "Backspace" && !chipInput.value && urls.length) {
+    removeUrl(urls[urls.length - 1]);
+  }
+});
+chipInput.addEventListener("blur", () => {
+  if (chipInput.value.trim()) { addTokens(splitTokens(chipInput.value)); chipInput.value = ""; }
+});
+chipsBox.addEventListener("click", () => chipInput.focus());
+chipInput.addEventListener("focus", () => chipsBox.classList.add("focus"));
+chipInput.addEventListener("blur", () => chipsBox.classList.remove("focus"));
+
+$("clearBtn").addEventListener("click", () => { urls = []; renderChips(); chipInput.value="";
+  $("list").innerHTML=""; $("actions").classList.remove("show"); setMsg(""); updateCount(); });
 $("checkBtn").addEventListener("click", check);
 $("dlAllBtn").addEventListener("click", downloadAll);
 updateCount();
