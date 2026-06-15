@@ -235,30 +235,59 @@ function render(results) {
   setMsg(`${okCount}개 영상 준비 완료${bad ? `, ${bad}개 실패` : ""}.`, "ok");
 }
 
-function dlUrl(i) {
+function prepareUrl(i) {
   const res = items[i];
   const sel = document.querySelector(`select[data-q="${i}"]`);
   const q = sel ? sel.value : "HD";
-  return "/api/download?" + new URLSearchParams({ url: res.url, quality: q });
+  return "/api/prepare?" + new URLSearchParams({ url: res.url, quality: q });
 }
 
-function downloadOne(i) {
+// 변환(진행률 표시) → 완료되면 파일 다운로드 트리거
+async function downloadOne(i) {
   const st = document.querySelector(`[data-st="${i}"]`);
-  trigger(dlUrl(i));
-  if (st) { st.className = "st run"; st.innerHTML = '<span class="spin"></span>받는 중';
-    setTimeout(() => { st.className = "st ok"; st.textContent = "✓ 시작됨"; }, 1500); }
+  const btn = document.querySelector(`button.dl[data-i="${i}"]`);
+  const setSt = (cls, html) => { if (st) { st.className = "st " + cls; st.innerHTML = html; } };
+  if (btn) btn.disabled = true;
+  setSt("run", '<span class="spin"></span>변환 중');
+  try {
+    const resp = await fetch(prepareUrl(i));
+    if (!resp.ok) { const e = await resp.json().catch(()=>({})); throw new Error(e.error || "변환 실패"); }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "", done = null, errMsg = null;
+    while (true) {
+      const { value, done: fin } = await reader.read();
+      if (fin) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        const o = JSON.parse(line);
+        if (o.progress != null) setSt("run", `<span class="spin"></span>${o.progress.toFixed(0)}초`);
+        if (o.done) done = o;
+        if (o.error) errMsg = o.error;
+      }
+    }
+    if (errMsg) throw new Error(errMsg);
+    if (!done) throw new Error("변환 결과를 받지 못했습니다.");
+    trigger("/api/file?" + new URLSearchParams({ id: done.id }));
+    setSt("ok", "✓ 완료");
+  } catch (e) {
+    setSt("err", "✗ 실패");
+    setMsg(`${items[i].title || items[i].url}: ${e.message}`, "err");
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 async function downloadAll() {
   const oks = items.map((r,i)=>({r,i})).filter(x=>x.r.ok);
   setBusy($("dlAllBtn"), true, "다운로드 중");
-  // 변환 부하를 고려해 순차적으로 트리거
-  for (const {i} of oks) {
-    downloadOne(i);
-    await sleep(1200);
-  }
+  // 변환 부하를 고려해 순차 처리 (각 영상 변환 완료 후 다음으로)
+  for (const {i} of oks) await downloadOne(i);
   setBusy($("dlAllBtn"), false, "전체 다운로드");
-  setMsg(`${oks.length}개 다운로드를 시작했습니다. 브라우저 다운로드 목록을 확인하세요.`, "ok");
+  setMsg(`${oks.length}개 처리 완료. 브라우저 다운로드 목록을 확인하세요.`, "ok");
 }
 
 function trigger(href) {

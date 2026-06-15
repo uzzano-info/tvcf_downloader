@@ -2,12 +2,15 @@ import http from "node:http";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import path from "node:path";
 import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
+const WORK = path.join(os.tmpdir(), "tvcf_dl");
+fs.mkdirSync(WORK, { recursive: true });
+const READY = new Map(); // id -> { file, name }
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
@@ -43,41 +46,75 @@ function safeName(s) {
   return s.replace(/[\/\\?%*:|"<>]/g, "_").replace(/\s+/g, "_").slice(0, 80);
 }
 
-// ffmpeg 로 HLS(m3u8)를 mp4 로 받아 클라이언트로 스트리밍한다.
-function downloadAndStream(m3u8, pageUrl, filename, res) {
-  const tmp = path.join(os.tmpdir(), `tvcf_${randomUUID()}.mp4`);
+const HHMMSS = /time=(\d+):(\d+):(\d+(?:\.\d+)?)/;
+
+// ffmpeg 로 HLS(m3u8)를 "일반(seekable) mp4" 로 변환한다.
+// 변환에는 수 초가 걸리므로, 진행 상황(JSON 한 줄씩)을 흘려보내 연결을 유지(heartbeat)하고
+// 완료되면 다운로드용 id 를 내려준다. 실제 파일은 /api/file 에서 받는다.
+// (stdout 으로 바로 보내려면 fragmented mp4 가 되어 일부 플레이어가 첫 조각만 재생하는 문제가 있음)
+function prepare(m3u8, pageUrl, filename, res) {
+  const id = randomUUID();
+  const file = path.join(WORK, `${id}.mp4`);
   const args = [
     "-headers", `Referer: ${pageUrl}\r\nUser-Agent: ${UA}\r\n`,
     "-i", m3u8,
     "-c", "copy",
     "-bsf:a", "aac_adtstoasc",
     "-movflags", "faststart",
-    "-y", tmp,
+    "-y", file,
   ];
   const ff = spawn("ffmpeg", args);
   let err = "";
-  ff.stderr.on("data", (d) => (err += d.toString()));
+
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson; charset=utf-8",
+    "Cache-Control": "no-cache",
+  });
+  const send = (o) => { try { res.write(JSON.stringify(o) + "\n"); } catch {} };
+
+  ff.stderr.on("data", (d) => {
+    err += d.toString();
+    const m = HHMMSS.exec(d.toString());
+    if (m) send({ progress: (+m[1]) * 3600 + (+m[2]) * 60 + parseFloat(m[3]) });
+  });
+
   ff.on("error", () => {
-    if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "ffmpeg 실행에 실패했습니다. ffmpeg 가 설치되어 있는지 확인하세요." }));
+    send({ error: "ffmpeg 실행에 실패했습니다. ffmpeg 가 설치되어 있는지 확인하세요." });
+    res.end();
   });
+
   ff.on("close", (code) => {
-    if (code !== 0 || !fs.existsSync(tmp)) {
-      if (!res.headersSent) res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "영상 변환에 실패했습니다.", detail: err.slice(-500) }));
-      fs.rm(tmp, () => {});
-      return;
+    if (code === 0 && fs.existsSync(file)) {
+      READY.set(id, { file, name: filename });
+      // 30분 뒤 자동 정리
+      setTimeout(() => { READY.delete(id); fs.rm(file, () => {}); }, 30 * 60 * 1000).unref();
+      send({ done: true, id, name: filename });
+    } else {
+      fs.rm(file, () => {});
+      send({ error: "영상 변환에 실패했습니다.", detail: err.slice(-300) });
     }
-    const stat = fs.statSync(tmp);
-    res.writeHead(200, {
-      "Content-Type": "video/mp4",
-      "Content-Length": stat.size,
-      "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
-    });
-    const rs = fs.createReadStream(tmp);
-    rs.pipe(res);
-    rs.on("close", () => fs.rm(tmp, () => {}));
+    res.end();
   });
+
+  res.on("close", () => { if (!ff.killed) ff.kill("SIGKILL"); });
+}
+
+// 변환 완료된 파일을 첨부파일로 전송하고 정리한다.
+function serveFile(id, res) {
+  const entry = READY.get(id);
+  if (!entry || !fs.existsSync(entry.file)) {
+    sendJson(res, 404, { error: "파일이 만료되었거나 존재하지 않습니다. 다시 시도해 주세요." });
+    return;
+  }
+  const stat = fs.statSync(entry.file);
+  res.writeHead(200, {
+    "Content-Type": "video/mp4",
+    "Content-Length": stat.size,
+    "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(entry.name)}`,
+  });
+  const rs = fs.createReadStream(entry.file);
+  rs.pipe(res);
+  rs.on("close", () => { READY.delete(id); fs.rm(entry.file, () => {}); });
 }
 
 function sendJson(res, code, obj) {
@@ -137,18 +174,24 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 실제 다운로드
-  if (req.method === "GET" && url.pathname === "/api/download") {
+  // 변환 시작 (진행 상황을 ndjson 으로 스트리밍, 완료 시 다운로드 id 반환)
+  if (req.method === "GET" && url.pathname === "/api/prepare") {
     try {
       const pageUrl = url.searchParams.get("url");
       const quality = url.searchParams.get("quality") || "HD";
       const info = await resolveStreams(pageUrl);
       const m3u8 = info.streams[quality] || Object.values(info.streams)[0];
       const filename = `${safeName(info.title)}_${quality}.mp4`;
-      downloadAndStream(m3u8, info.pageUrl, filename, res);
+      prepare(m3u8, info.pageUrl, filename, res);
     } catch (e) {
       sendJson(res, 400, { error: e.message });
     }
+    return;
+  }
+
+  // 변환 완료된 파일 다운로드
+  if (req.method === "GET" && url.pathname === "/api/file") {
+    serveFile(url.searchParams.get("id"), res);
     return;
   }
 
