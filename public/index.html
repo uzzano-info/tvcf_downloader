@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>TVCF 영상 다운로더</title>
+<title>영상 줍줍</title>
+<link rel="icon" type="image/png" href="/logo.png" />
 <style>
   :root { --bg:#0f1220; --card:#191d31; --card2:#0f1326; --accent:#5b8cff; --text:#e8eaf2;
     --muted:#9aa0b5; --border:#2a3050; --ok:#7bffa1; --err:#ff7b7b; }
@@ -63,7 +64,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>🎬 영상 다운로더</h1>
+  <h1>🎬 영상 줍줍</h1>
   <p class="sub">tvcf.co.kr · 유튜브 · 인스타그램(릴스/게시물) 주소를 붙여넣으세요. 최대 10개까지 한 번에 받을 수 있어요.</p>
 
   <div class="card">
@@ -95,7 +96,11 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const QLABEL = { HD: "HD (720p)", SD: "SD (기본)", mobile: "모바일" };
+const QLABEL = {
+  HD: "HD (720p)", SD: "SD (기본)", mobile: "모바일",
+  "원본": "최고화질", "2160": "4K (2160p)", "1440": "QHD (1440p)",
+  "1080": "FHD (1080p)", "720": "HD (720p)", "480": "480p", "360": "360p",
+};
 let items = []; // {url,title,qualities}
 let urls = [];  // 입력된 URL 칩 목록
 
